@@ -1,0 +1,441 @@
+---
+title: "HorseRacing"
+author: "JustinCharbonneau"
+date: "October 8, 2018"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=3, fig.height=2,echo = TRUE)
+```
+
+## Introduction
+
+The goal of this analysis is to predict the winner of race horses. Because money would be involved, I dont want to force the prediction on every run, but only predict when the model beleives it will be able to predict the winner from the attributes.
+
+I would be impressed to get good results, as I think that we would need to have much more data, to make a better prediction. A few examples include weight of the horses and riders, riding style or technique, years of experience and even the age of both the horses and drivers "jockeys".
+
+Because there are two datasets, I will start by analyzing the Results dataset, and then the Conditions dataset and then merging them together. I will also load the necessary libraries. Mainly the Tidyverse ecosystem.
+
+```{r,message=FALSE}
+# Load necessary packages
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(randomForest)
+
+# Set the seed for reproducibility
+set.seed(217)
+```
+
+```{r}
+# Load the results dataset
+results <- read.csv("C:\\Users\\jchar\\OneDrive\\Desktop\\Z\\DS Take Home Assignment3.tar\\Results3.csv")
+
+# Load the conditions dataset
+conditions <- read.csv("C:\\Users\\jchar\\OneDrive\\Desktop\\Z\\DS Take Home Assignment3.tar\\Conditions3.csv")
+
+# Convert to table
+res <- as_tibble(results)
+cond <- as_tibble(conditions)
+```
+
+## Exploratory Data Analysis
+
+The first questions that I would like to analyse are the following:
+
+*Are there any missing values?
+*Are there any outliers?
+*Are the numerical variables normally distributed?
+*Are there duplicates? 
+
+### Results Dataset
+
+```{r}
+glimpse(res)
+
+# Convert date column from factor to a proper date format instead of factor
+res$date = as_date(res$date)
+cond$date = as_date(cond$date)
+```
+
+
+```{r}
+# Check if there are any missing values
+is_na_res <- is.na(res)
+tbl <- as_tibble(table(is_na_res))
+rm(is_na_res)
+```
+
+There weren't any missing values in the results dataset! 
+Next, to see if there are any outliers for the time it takes to complete the laps, I used a scatter plot.
+
+```{r , echo=FALSE}
+# Plot the times in seconds over the dates
+plot_full <- ggplot(res) +
+              aes(x=res$date,y=res$seconds) +
+              geom_point(color="turquoise4",size=0.5) + labs(title ="Race Times", x = "Race Days", y = "Seconds") 
+plot_full
+
+res_march <- res %>% filter(month(res$date)==03)
+plot_sum <- ggplot(res_march) + aes(x=res_march$date,y=res_march$seconds) +
+                  geom_point(color="turquoise4",size=0.8) + labs(title ="March Race Times", x = "Race Days", y = "Seconds") 
+plot_sum
+```
+
+By looking at the plot, I noticed some outliers in the month of March. I will need to take a closer look to see if there are any explanations. In fact, there isn't just one horse that is taking a longer time than average, it's all the racers for the specific race. I looked more closely to the data and noticed they are all on the **fourth** race of that month. Nothing alarming indicated anything about the weather, so I am assuming that there was maybe a special event during that month, maybe instead of a 7 Furlongs race, they did 1 mile races (equivalent of 8 Furlongs), which takes a longer time to complete. This would need to be discussed with the data providers.
+
+To deal with outliers like these, I would first consider the outliers and also try it without them to see if there is a difference in my model.
+
+Next,is a plot about the frequency of the odds of the racers. The data for this attribute is positively skewed. This will need to be considered depending on the algorithm used for our model. Thankfully, the algorithm Random Forest isn't sensitive to data skewness, so I should be good to go! The next plot looks at bivariate data (temperature over time). The scatter plot was used to identify easily if there exist a correlation in the data.
+
+```{r , echo=FALSE}
+plot_odds <- ggplot(res,aes(odds)) + geom_density(fill="turquoise4") + ggtitle("Frequency of the Odds")
+plot_odds
+
+plot_temp <- ggplot(cond, aes(date,temp)) + geom_point(color="turquoise4") + ggtitle("Temperature over Time")
+plot_temp
+```
+
+There are few points that are a bit higher than average. Two of them are more noticible during the month of March. I will keep this in mind when I analyze further the data.
+
+Before I merge the dataset, I want to ensure there are no dupplicates.
+
+```{r}
+dupplicate_date <- as.data.frame(table(cond$date)) %>%
+                      filter(Freq > 1)
+View(dupplicate_date)
+```
+
+Because there are only six dates with dupplicate information, I can analyze them one by one and not loose a lot of valuable time doing so. As mentioned, there are a few points from the scatter plots that look like outliers. From looking at the data more closely, the dupplicates indicated one value that was more probable than the other one. For example, for a date that was in march, if there were dupplicates with one that said it was 20+ and another arround 10, then according to the average of the month of march, the temperature arround 10 made more sense.
+
+```{r}
+# Here I simply decided to remove by indexes. I would of proceeded in a different way if I
+# had more to remove. For example casting them as NA and then dropping them.
+
+cond <- cond[-21,]
+cond <- cond[-27,]
+cond <- cond[-29,]
+cond <- cond[-29,]
+cond <- cond[-32,]
+cond <- cond[-33,]
+cond <- cond[-42,]
+```
+
+
+```{r}
+# Convert date from factor to date format
+cond$date <- as_date(cond$date)
+
+# Merge the two datasets together
+full_data <- left_join(res,cond,by="date")
+
+# View top rows
+full_data %>%
+        head
+```
+
+Now that I have merged the data sets, I verified if there were any missing values. Turns out that there were! After taking a closer look, I realized that the temperature and condition were missing for February 1st.
+
+```{r}
+is_na_full <- is.na(full_data)
+tbl <- as_tibble(table(is_na_full))
+```
+
+Because the conditions are nominal values, I found the mode. As for the weather conditions, I decided to take the average weather for January and February.
+
+```{r}
+Mode <- function(x) {
+ ux <- unique(x)
+ ux[which.max(tabulate(match(x, ux)))]
+}
+
+mode <- Mode(full_data$cond)
+
+# Next is to take a look at the mean for the last month.
+jan_feb_temps <- cond %>%
+                  filter(month(date) == 01 | month(date) == 02)
+
+mean <- mean(jan_feb_temps$temp)
+```
+
+* The man for January and February is `r mean`.
+* The most frequent condition is `r mode`.
+
+```{r}
+full_data$temp <- if_else(is.na(full_data$temp),as.integer(20.57),full_data$temp)
+full_data$cond <- if_else(is.na(full_data$cond),"FT",as.character(full_data$cond))
+```
+
+### Adding and manipulating the data
+
+Because the question is to find who is the winner, I added a binary "is_winner" column.
+
+```{r}
+full_data <- full_data %>%
+            mutate(is_winner = if_else(full_data$pos == 1,1,0))
+
+# Convert to Factor
+full_data$is_winner <- full_data$is_winner %>% as.factor()
+```
+
+The date column does not provide additional information, so I decided to simply use the month value and drop the date column.
+
+```{r}
+full_data <- full_data %>%
+            mutate(month = month(date)) %>%
+              select(-date)
+
+# Convert to factor
+full_data$month <- full_data$month %>% as.factor()
+```
+
+Because I want to use the Random Forest algorithm, having too many categories in a an attribute makes it very hard to build trees. Therefore, I will analyze the number of categories for the columns "name", "driver" and "trainer" and use binning to reduce the number of categories. The reason I am doing this, is because I beleive if a horse or driver or trainer performs more races, then this indicates somewhat the level of competitiveness of the horse or individual. By analysing the bar charts, I may determine the size of the bins.
+
+Following are three sets of graphs that represent the distribution of the categories for those columns before and after binning.
+
+```{r}
+fq_horse_name <- as_tibble(table(full_data$name))
+
+plot_hname <- ggplot(fq_horse_name) + aes(n) + geom_bar(fill="turquoise3") + ggtitle("Horse Names")
+plot_hname
+
+fq_horse_name <- fq_horse_name %>%
+          mutate(horse_bin =  if_else(fq_horse_name$n < 3,1,
+                            if_else(fq_horse_name$n < 6,2,
+                                    if_else(fq_horse_name$n < 11,3,
+                                            if_else(fq_horse_name$n <16,4,5
+                                                    )))))
+plot_bin_hname <- ggplot(fq_horse_name) + aes(x=horse_bin) + geom_bar(fill="turquoise3") + ggtitle("Horse Bins")
+plot_bin_hname
+```
+
+
+```{r}
+fq_jock_name <- as_tibble(table(full_data$driver))
+
+plot_jock_name <- ggplot(fq_jock_name) + aes(n) + geom_bar(fill="turquoise4") + ggtitle("Driver Names")
+plot_jock_name
+
+fq_jock_name <- fq_jock_name %>%
+  mutate(driver_bin =  if_else(fq_jock_name$n < 5,1,
+                              if_else(fq_jock_name$n < 25,2,
+                                      if_else(fq_jock_name$n < 50,3,
+                                              if_else(fq_jock_name$n <200,4,5
+                                              )))))
+plot_jock_bin <- ggplot(fq_jock_name) + aes(driver_bin) + geom_bar(fill="turquoise4") + ggtitle("Driver Bins")
+plot_jock_bin
+```
+
+
+```{r}
+fq_trainer_name <- as_tibble(table(full_data$trainer))
+
+plot_train_name <- ggplot(fq_trainer_name) + aes(n) + geom_bar(fill="turquoise4") + ggtitle("Trainer Names")
+plot_train_name
+
+fq_trainer_name <- fq_trainer_name %>%
+  mutate(trainer_bin =  if_else(fq_trainer_name$n < 5,1,
+                               if_else(fq_trainer_name$n < 25,2,
+                                       if_else(fq_trainer_name$n < 40,3,
+                                               if_else(fq_trainer_name$n <100,4,5
+                                               )))))
+plot_train_bin <- ggplot(fq_trainer_name) + aes(trainer_bin) + geom_bar(fill="turquoise4") + ggtitle("Trainer Bins")
+plot_train_bin
+```
+
+Now I will reintegrate the new columns in my dataset and remove the "name", "driver" and "trainer" columns.
+
+```{r, message=FALSE}
+names(fq_horse_name)[names(fq_horse_name) == 'Var1'] <- 'name'
+names(fq_jock_name)[names(fq_jock_name) == 'Var1'] <- 'driver'
+names(fq_trainer_name)[names(fq_trainer_name) == 'Var1'] <- 'trainer'
+
+full_data <- left_join(full_data,fq_horse_name,by="name")
+# remove that n column and horse name
+full_data <- full_data %>%
+                select(-n,-name)
+
+full_data <- left_join(full_data,fq_jock_name,by="driver")
+# remove that n column and horse name
+full_data <- full_data %>%
+  select(-n,-driver)
+
+full_data <- left_join(full_data,fq_trainer_name,by="trainer")
+# remove that n column and horse name
+full_data <- full_data %>%
+  select(-n,-trainer)
+```
+
+Set is_winner column.
+
+```{r}
+full_data <- full_data %>%
+  mutate(is_winner = if_else(full_data$pos == 1,1,0))
+
+# Convert to factor, not character
+full_data$cond <- full_data$cond %>% as.factor()
+```
+
+### Data Spliting
+
+```{r}
+train <- full_data[0:2306,]
+testVal <- full_data[2307:3351,] %>% select(is_winner)
+test <- full_data[2307:3351,] %>% 
+          select(racenum,odds,hnum,month,temp,cond,horse_bin,driver_bin,trainer_bin)
+```
+
+# Prediction
+
+Due to lack of time, I wanted to execute an easy to understand algorithm that works with both numerical and categorical variables.
+
+```{r fig.width=6,fig.height=4 }
+# Train the model
+model <- randomForest(as.factor(is_winner) ~ racenum + hnum +odds + cond +temp + horse_bin +
+                      driver_bin + trainer_bin + month,
+                    data=train,
+                    importance = TRUE,
+                    ntree=3000)
+# Plot the importance of the attributes (information gain)
+varImpPlot(model)
+```
+
+By looking at these plots, I understand that "cond" does not provide useful information for my model. This makes sense, because most of the cases, the condition is "FT". 
+
+```{r}
+# Train the model
+secondModel <- randomForest(as.factor(is_winner) ~ racenum + hnum +odds + temp + horse_bin +
+                      driver_bin + trainer_bin + month,
+                    data=train,
+                    importance = TRUE,
+                    ntree=3000)
+
+```
+
+
+```{r}
+#remove the cond column from the dataset
+test <- test %>% select(-cond)
+
+# Start the prediction with the test set
+prediction <- predict(secondModel,test)
+
+submit <- data.frame(truth = testVal$is_winner, model= prediction)
+```
+
+### The results
+
+```{r}
+submit <- submit %>% 
+            mutate(correct = if_else(submit$model == 1, if_else(submit$truth == 1,"Correct","Miss"),"No Guess"))
+
+submit$correct <- submit$correct %>% as.factor()
+
+plot_results <- ggplot(submit) + aes(correct) + geom_bar(fill=c(correct="turquoise4",miss="tomato2","NA"="azure4")) + ggtitle("Prediction Results")
+plot_results
+```
+
+I will discuss the results in my conclusion.
+
+# The 9th race
+
+```{r ,message=FALSE}
+race9 <- read.csv("C:\\Users\\jchar\\OneDrive\\Desktop\\Z\\DS Take Home Assignment3.tar\\Race9.csv")
+race9 <- race9 %>% as.data.frame()
+
+# Quickly set the name,driver and trainer experience bins
+race9 <- left_join(race9,fq_horse_name,by="name")
+# remove that n column and horse name
+race9 <- race9 %>%
+                select(-n,-name)
+
+race9 <- left_join(race9,fq_jock_name,by="driver")
+# remove that n column and horse name
+race9 <- race9 %>%
+  select(-n,-driver)
+
+race9 <- left_join(race9,fq_trainer_name,by="trainer")
+# remove that n column and horse name
+race9 <- race9 %>%
+  select(-n,-trainer)
+
+summary(race9)
+
+```
+
+Looks like there are two trainers that have never competed. I will impute these values as 0, as they have no experience.
+
+```{r}
+# Replace NA with 1
+race9$trainer_bin <- if_else(is.na(race9$trainer_bin),1,race9$trainer_bin)
+
+race9$date <- race9$date %>% as_date()
+cond$date <- cond$date %>% as_date()
+
+# Merge the two datasets together
+race9 <- left_join(race9,cond,by="date")
+
+race9 <- race9 %>%
+            mutate(month = month(date)) %>%
+              select(-date)
+
+# Convert to factor
+race9$month <- race9$month %>% as.factor()
+
+# View top rows
+race9 %>%
+        head
+
+# Remove the cond column
+race9 <- race9 %>% select(-cond)
+
+```
+
+Time to test it with the model.
+
+```{r}
+# Must set the same levels for both data sets to run Random Forest
+levels(race9$month) <- levels(train$month)
+#levels(train$cond) <- levels(race9$cond)
+levels(train$month) <- levels(race9$month)
+#levels(race9$cond) <- levels(train$cond)
+```
+
+```{r}
+prediction <- predict(secondModel,race9)
+
+submit <- data.frame(model= prediction)
+
+View(submit)
+```
+
+
+My model didn't predict any winners for the last race.
+
+The use of this algorithm didn't prove to be very effective in this example. Hence, wasn't the effort to tweek the parameters to increase the accuracy.
+
+For futher exploration, would be interested in the Support Vector Machine technique to predict the outcome of the race. I would be interested in using SVM because it can handle very sparse data. This means that I would be able to manipulate the data differently, and instead of using bins to classify the experience of the name of the horse, the driver and the trainer, I could use binary attributes, known as bitMaps. I beleive this would be a better approach for this kind of problem. In the case of a ensemble method with decision trees as the base classifier, it doesn't handle sparse data well, known as the curse of dimentionality.
+
+Thanks for reading!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
