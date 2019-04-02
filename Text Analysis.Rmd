@@ -1,0 +1,197 @@
+---
+title: "News Feed Text Mining"
+author: "Justin Charbonneau"
+date: "`r Sys.time()`"
+output:
+  html_document: 
+    code_folding: hide
+    df_print: kable
+    toc: yes
+    toc_float: yes
+---
+
+# Introduction
+
+Recently I read the book Text Mining with R by Julia Silge and David Robinson. The book can be read online for free <a href="https://www.tidytextmining.com">here</a>. It has great examples on how to implement text mining on various text data sets. From this, I wanted to try it on my own with a different source of data. 
+
+The data that I am interested in analyzing are articles found on various websites.
+
+After looking online, I found an interesting API that let me query recent articles based on keywords from hundreds of different websites. The company providing the API is eventregistry.org. They provide a free tier that allows me to call their API 2000 times. This was acceptable for my use case.
+
+I found this interesting, because now I am not only going to read in data that is already somewhat clean, I will actually get real live data! Some issues that are more likely to occur are articles that talk about more than one company. For example, an article that will give top reviews for 5 stocks. 1 of them, has poor reviews and the other 4 will have positive reviews. Let's say I am querying for that one stock that has actually bad reviews. The sentiment that will be returned will be an aggregate sentiment from the whole article.
+
+# Loading necessary libraries
+
+```{r warning=FALSE}
+library(httr)
+library(jsonlite)
+library(tidyverse)
+library(tidytext)
+library(sentimentr)
+library(ggplot2)
+
+```
+
+# Getting the data
+
+There are a few parameters that I must feed to the GET requests. The query will be the search keywords that I am interested in and the api_key was received from the newsApi.com website.
+
+```{r}
+base <- "http://eventregistry.org"
+endpoint <- "/api/v1/article/getArticles"
+query <- "Microsoft+Corporation"
+api_key <- "3b697c0e-a30f-45cd-b3f7-327b9d1a3f49"
+resultType <- "articles"
+dateStart <- "2019-04-01"
+dateEnd <- "2019-04-02"
+isDuplicateFilter <- "skipDuplicates"
+dataType <- "news"
+```
+
+I will paste all of these arguments in one string, and call the API with GET.
+
+```{r}
+call_string <- paste(base,endpoint,"?",
+                     "keyword","=", query,
+                     "&apiKey=",api_key,
+                     "&lang=eng",
+                     "&resultType=",resultType,
+                     "&dateStart=",dateStart,
+                     "&dateEnd=",dateEnd,
+                     "&isDuplicateFilter=",isDuplicateFilter,
+                     "&dataType=",dataType,
+                     sep="")
+
+get_articles <- GET(call_string)
+```
+
+Next, I will store this data in a tibble, so I can proceed with sentiment analysis.
+
+```{r}
+get_articles_text <- content(get_articles, "text")
+
+get_articles_json <- fromJSON(get_articles_text, flatten = TRUE)
+
+get_articles_df <- tibble(get_articles_json$articles)
+
+get_articles_df <- get_articles_df$`get_articles_json$articles`$results
+```
+
+# Simple Sentiment Analysis
+
+The first method I want to look at is the simplest one. I will use an existing data frame that contains thousands of words with associated labels. These labels will be either 'positive' or 'negative'. Then, I will look at the overall sentiment for every article to determine how positive and negative they are.
+
+## Step 1: Tokenization
+
+The structure that will be used is a one-token-per-row data frame. Currently, the column "content" contains strings of words that form the article. To convert this in the appropriate structure, I will use unnest_tokens by the tidytext library.
+
+
+```{r}
+data <- tibble(text = get_articles_df$body,
+               article_id = seq(1,length(get_articles_df$body)))
+
+tokenized_data<- data %>%
+  unnest_tokens(word, text)
+```
+
+There are many stopwords, which don't help us understand the positivity of the article. These can be removed by loading existing stopwords and anti-joining both data frames.
+
+```{r}
+data(stop_words)
+
+tidy_articles <- tokenized_data %>%
+  anti_join(stop_words)
+```
+
+Why not look what are the most common words accross all of the articles collected?
+
+```{r}
+tidy_articles %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 50) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL)+
+  labs(title='Most frequent words across articles')+
+  coord_flip()
+```
+
+We can quickly see that most articles include the words sales. If we can determine the positivity of these articles, then likely positive articles about sales would be a good indicator for the compary.
+
+## Dictionary-based Sentiment Analysis
+
+bing contains the words.
+
+```{r}
+bb <- get_sentiments("bing")
+
+tidy_articles_bb <- tidy_articles %>%
+  inner_join(bb)
+
+```
+
+```{r}
+tidy_articles_bb %>%
+  group_by(article_id) %>%
+  count(., sentiment) %>%
+  spread(sentiment,n) %>%
+  mutate(sentiment = positive - negative) %>%
+  arrange(sentiment)
+```
+
+According to the sentiment provided by Event Registry, the negative articles where articles 3, 6, 15 and 16.
+
+Here, using the bing dictionary, we get the articles 16, 3, 2, 6, 1, 15.
+
+This is impressive, as all four negative articles identified by the Event Registry were captured by our very simple dictionary-based sentiment analysis.
+
+Now, I am curious to see what are the most common positive and negative words
+
+```{r}
+bing_word_counts <- tidy_articles_bb %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_word_counts
+```
+
+```{r}
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  coord_flip()
+```
+
+Notice here, that the term "weed" is identified as negative. This isn't the case, as we are analyzing a weed company. This indicates that the lexicon used for the sentiment analysis should be reviewed for this specific industry.
+
+Also, pain is identified as negative. That would be correct by nature, but I would expect that the word would of been accompanied by another word like "reduce pain", which would be positive.
+
+This is one of the drawbacks of this technique, as it doesn't understand more complex terms of the natural language.
+
+```{r}
+library(wordcloud)
+
+bing_word_counts %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+
+## Sentence based NLP using sentimentR
+
+Comming soon!
+
+
+
+
+
+
+
+
+
