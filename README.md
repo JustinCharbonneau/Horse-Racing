@@ -1,3 +1,4 @@
-# R-Projects
+# Horse Racing
 
-### School Assignments done in my Data Mining Class
+- Data Cleaning
+- Quick Prediction
