@@ -145,9 +145,45 @@ avg_time_df_horse <- train_data %>%
 
 vvv <- left_join(test_data,avg_time_df,by='unique_id')
 
-left_join(test_data,avg_time_df_horse,by='unique_id')
+View(vvv)
 
 
+# Lets filter on the id = 1. This will create a new classification task. AS we know, one third of the time
+# the oods predicting the correct driver was correct. Let's see if we can learn something about this and classify this
+# And create a new label, train data on it and predict! 
+#
+
+one <- vvv %>% filter(id==1)
+
+View(one)
+
+# Create new variable
+
+one <- one %>% select(racenum,hnum,odds,date,name,driver,trainer,id,odds_id) %>% mutate(label = if_else(id==odds_id,1,0))
+
+library(aod) # logistic regression
+
+library(ggplot2)
+
+mylogit <- glm(label ~ hnum + odds, data = one, family = "binomial")
+
+summary(mylogit)
+
+one$racenum <- factor(one$racenum)
+one$hnum <- factor(one$hnum)
+one$name <- factor(one$name)
+one$driver <- factor(one$driver)
+one$trainer <- factor(one$trainer)
 
 
+summary(one)
+
+fit <- rpart(label ~ hnum + odds, data = one, method="anova")
+
+printcp(fit)
+
+one <- left_join(one,conditions,by='date')
+
+mylogit <- glm(label ~ temp + cond + odds, data = one, family = "binomial")
+summary(mylogit)
 
